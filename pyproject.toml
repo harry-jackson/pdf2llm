@@ -1,0 +1,17 @@
+[project]
+name = "pdf2llm"
+version = "0.0.1"
+authors = [
+  { name="Harry Jackson" },
+]
+description = "PDF tools for LLMs."
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/harry-jackson/pdf2llm"
