@@ -9,6 +9,9 @@ import layoutparser as lp
 from typing import List, Optional
 import os
 import re
+import openai
+from dataclasses import dataclass
+from time import sleep
 
 re_not_alpha = re.compile('[^a-zA-Z]')
 
@@ -299,4 +302,49 @@ class PDF:
         
         return self.ids(ids)
 
+def openai_embedding(text, model="text-embedding-ada-002"):
+    
+    text = text.replace("\n", " ")
+    repeats = 0
+    while repeats < 60:
+        try:
+            res = openai.Embedding.create(input = [text], model=model)['data'][0]['embedding']
+            break
+        except Exception as e:
+            print(text)
+            print(e)
+            repeats += 1
+            sleep(1)
+    return res
+
+def format_prompt(prompt, **kwargs):
+    return([{'role': field, 'content': prompt[field].format(**kwargs)} for field in prompt])
+
+@dataclass
+class LLM:
+    prompt:str
+    model:str = 'gpt-3.5-turbo'
+    max_tokens:int = 256
+    temperature:float = 0
+
+    def run(self, **kwargs):
+        prompt = format_prompt(self.prompt, **kwargs)
+        api_200 = False
+        tries = 0
+        while (not api_200) and (tries < 60):
+            try:
+                completion = openai.ChatCompletion.create(
+                    model = self.model,
+                    messages = prompt,
+                    max_tokens = self.max_tokens,
+                    temperature = self.temperature
+                )
+                api_200 = True
+            except Exception as error:
+                print(repr(error))
+                tries += 1
+                sleep(1)
+                
+        res = completion.choices[0].message.content
         
+        return res
