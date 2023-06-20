@@ -187,12 +187,13 @@ def phrase_to_match_function(phrase):
 
 class PDF:
     @staticmethod
-    def from_fitz(document, tables: Optional[List[List]] = None):
+    def from_fitz(document, tables: Optional[List[List]] = None, model = None):
         if tables == None:
-            detectron_model = lp.Detectron2LayoutModel('lp/config_large.yml',
-                extra_config=["MODEL.ROI_HEADS.SCORE_THRESH_TEST", 0.7],
-                label_map={0: "Text", 1: "Title", 2: "List", 3:"Table", 4:"Figure"})
-            tables = [detect_tables(page, detectron_model) for page in document]
+            if model == None:
+                model = lp.Detectron2LayoutModel('lp/config_large.yml',
+                    extra_config=["MODEL.ROI_HEADS.SCORE_THRESH_TEST", 0.7],
+                    label_map={0: "Text", 1: "Title", 2: "List", 3:"Table", 4:"Figure"})
+            tables = [detect_tables(page, model) for page in document]
 
         boxes = [page_to_box(page, table) for page, table in zip(document, tables)]
         
