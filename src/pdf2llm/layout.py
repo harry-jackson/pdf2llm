@@ -26,7 +26,7 @@ def classify_data_type(s: str) -> str:
     s = re_symbols.sub('', s).strip()
     if s == '':
         return 'symbol'
-    elif s == 'na' or s.isnumeric():
+    elif s == 'na' or s == 'n/a' or s.isnumeric():
         return 'numeric'
     else:
         return 'string'
@@ -146,8 +146,12 @@ def table_boxes_to_text(table_rows: List[Box]) -> str:
     return res
 
 def table_header_cutoff(lines: List[Box]) -> int:
-    
+    if len(lines) == 0:
+        return lines
+    # FIX - pass the parent box as the argument to this function to make this easier
     line_lengths = [line.size_x() for line in lines]
+    line_x1s = [line.x1 for line in lines]
+    min_x0 = min([line.x0 for line in lines])
     max_length = max(line_lengths)
     for line_id, line in enumerate(lines):
         data_types = [classify_data_type(s.text()) for s in line.boxes()]
@@ -160,7 +164,7 @@ def table_header_cutoff(lines: List[Box]) -> int:
 
     while line_id > 0:
         line_id -= 1
-        if line_lengths[line_id] > 0.5 * max_length:
+        if line_x1s[line_id] - min_x0 > 0.5 * max_length:
             break
 
     return line_id + 1
@@ -408,7 +412,9 @@ class Box:
 
         box_tuples = [(round(box.x0, 1), round(box.y0, 1), round(box.x1, 1), round(box.y1, 1), i) for i, box in enumerate(boxes)]
         line_tuples = [(round(line.x0, 1), round(line.y0, 1), round(line.x1, 1), round(line.y1, 1)) for line in lines]
-
+        if len(box_tuples) == 0:
+            self.Sub_Boxes = []
+            return
         divider = PageDivider(box_tuples, lines = line_tuples)
         new_box_tuples = divider.divide()
 

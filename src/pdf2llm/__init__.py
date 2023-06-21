@@ -179,8 +179,9 @@ class PDF:
                     label_map={0: "Text", 1: "Title", 2: "List", 3:"Table", 4:"Figure"})
             tables = [detect_tables(page, model) for page in document]
 
-        boxes = [page_to_box(page, table) for page, table in zip(document, tables)]
-        
+        boxes = []
+        for page_num, page, table in zip(range(len(document)), document, tables):
+            boxes.append(page_to_box(page, table))
         contents = contents_list(document, boxes)
 
         footer_strings = get_footer_strings(boxes)
