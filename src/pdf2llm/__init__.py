@@ -1,7 +1,7 @@
 from __future__ import annotations
 from pdf2llm.layout import Box
 from pdf2llm.contents import contents_list
-from pdf2llm.vectorstore import VectorStore
+from pdf2llm.search import VectorStore, make_simple_search_function, make_boolean_search_function, make_regex_search_function
 import fitz
 import json
 import numpy as np
@@ -41,6 +41,7 @@ def page_average_font_size(blocks: dict) -> float:
     return total_size / span_count
 
 def page_to_box(page, tables: List[List[float]] = []) -> Box:
+    
     blocks = json.loads(page.get_text(option = 'json', sort = True))['blocks']
 
     average_font_size = page_average_font_size(blocks)
@@ -73,8 +74,7 @@ def page_to_box(page, tables: List[List[float]] = []) -> Box:
                     for table_box in table_boxes:
                         
                         if table_box.intersects(new_box):
-                            if not new_box.is_footnote():
-                                table_box.add_sub_box(new_box)
+                            table_box.add_sub_box(new_box)
                             
                             add_to_sub_boxes = False
                             break
@@ -149,7 +149,12 @@ def box_to_pdf_data(box, page_number, section_title) -> dict:
         if text_box.is_table:
             for row in text_box.boxes():
                 for cell in row.boxes():
-                    table_dict.append({'text': cell.text(), 'bbox': [cell.x0, cell.y0, cell.x1, cell.y1]})
+                    table_dict.append({'text': cell.text(), 
+                                       'bbox': [cell.x0, cell.y0, cell.x1, cell.y1],
+                                       'row_type': cell.Row_Type,
+                                       'font_size': cell.Font_Size,
+                                       'visible': cell.Visible
+                                       })
         new_dict['table_data'] = table_dict
         res.append(new_dict)
         
@@ -163,27 +168,6 @@ def detect_tables(page, model):
     res = [[b.block.x_1, b.block.y_1, b.block.x_2, b.block.y_2] for b in layout._blocks if b.type == 'Table']
 
     return res
-
-def phrase_to_match_function(phrase):
-    # Add word boundaries, replace spaces with optional whitespace patterns
-    regex_pattern = r'\b' + phrase.replace(' ', r'\s+').replace('*', '\w*?') + r'\b'
-        
-    # Set the flags for multiline matching
-    flags = re.MULTILINE
-
-    # Set the flags for case-insensitive matching only if the phrase contains no uppercase letters
-    if not any(c.isupper() for c in phrase):
-        flags |= re.IGNORECASE
-
-    # Compile the regex pattern with the appropriate flags
-    regex = re.compile(regex_pattern, flags=flags)
-        
-    def f(text):
-        if regex.search(text):
-            return True
-        return False
-    
-    return f
 
 class PDF:
     @staticmethod
@@ -292,12 +276,20 @@ class PDF:
     def section(self, section_heading):
         return self.sections([section_heading])
     
-    def search(self, keyword):
-        matcher = phrase_to_match_function(keyword)
+    def search(self, query, case_sensitive = False):
+        matcher = make_simple_search_function(query, case_sensitive)
+        return self.filter_block_ids(lambda b: matcher(b['text']))
+    
+    def boolean_search(self, query, case_sensitive = False):
+        matcher = make_boolean_search_function(query, case_sensitive)
+        return self.filter_block_ids(lambda b: matcher(b['text']))
+    
+    def regex_search(self, query, case_sensitive = False):
+        matcher = make_regex_search_function(query, case_sensitive)
         return self.filter_block_ids(lambda b: matcher(b['text']))
     
     def vector_search(self, query, n_results = 5):
-        vector_store = self.Vector_Store
+        vector_store = self.VectorStore
         
         ids = vector_store.search(query, n_results)
         
@@ -306,12 +298,22 @@ class PDF:
 def openai_embedding(text, model="text-embedding-ada-002"):
     
     text = text.replace("\n", " ")
+    if text == '':
+        return [0.0] * 1536
+    
+    if len(text) > 8191:
+        print('Truncating long text: ' + text[:200] + '...')
+        text = text[:8191]
+
     repeats = 0
     while repeats < 60:
         try:
             res = openai.Embedding.create(input = [text], model=model)['data'][0]['embedding']
             break
         except Exception as e:
+            if type(e) == openai.error.InvalidRequestError:
+                print('Skipping invalid text: ' + text)
+                return [0.0] * 1536
             print(text)
             print(e)
             repeats += 1

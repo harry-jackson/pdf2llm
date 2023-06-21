@@ -118,9 +118,31 @@ def split(boxes: List[Box]) -> List[Box]:
 
     return res_boxes
 
-def table_boxes_to_text(table_boxes: List[Box]) -> str:
-    lines_text = ['(' + '|'.join([cell.text() for cell in row.boxes()]) + ')' for row in table_boxes]
-    res = '\n'.join(lines_text)
+re_cell_symbols = re.compile('[\#\£\$\€\%]')
+re_cell_footnotes = re.compile('\([a-z]\)')
+
+def process_cell_text(s: str) -> str:
+    s = re_cell_symbols.sub('', s)
+    s = re_cell_footnotes.sub('', s)
+    s = s.strip()
+    return s
+
+def table_boxes_to_text(table_rows: List[Box]) -> str:
+    row_text = []
+    for row in table_rows:
+        cells = row.boxes()
+        cell_text = [cell.text() for cell in cells]
+        if row.Row_Type == 'data':
+            cell_text = [process_cell_text(s) for s in cell_text]
+            cell_text = [s for s in cell_text if s != '']
+
+            # FIX - put this somewhere more sensible
+            for cell in cells:
+                if process_cell_text(cell.text()) == '':
+                    cell.Visible = False
+
+        row_text.append('(' + '|'.join(cell_text) + ')')
+    res = '\n'.join(row_text)
     return res
 
 def table_header_cutoff(lines: List[Box]) -> int:
@@ -154,12 +176,14 @@ class Box:
                  font_name: str = '', 
                  font_size: float = -1.0, 
                  font_color: str = '',
-                 average_font_size: float = -1.0):
+                 average_font_size: float = -1.0,
+                 row_type = 'data'):
         
-        self.Header_Cutoff = -1
+        self.Row_Type = row_type
         self.Font_Style = font_name_to_font_style(font_name)
         self.Font_Size = font_size
         self.Font_Color = font_color
+        self.Visible = True
 
         self.Leaf = sub_boxes == []
         if not self.Leaf:
@@ -367,7 +391,7 @@ class Box:
 
         for sub_box in self.Sub_Boxes:
             sub_box.sort_horizontal()
-            sub_box.merge_sub_boxes()
+            #sub_box.merge_sub_boxes()
 
         self.sort_vertical_mean()
 
@@ -378,6 +402,7 @@ class Box:
 
         lines = merge_lines([d.side_upper() for d in drawing_boxes] + [d.side_lower() for d in drawing_boxes])
         
+        # FIX - this should work differently for tables I think. 
         #text_leaves = [leaf for leaf in self.leaves() if leaf.is_text_box()]
         lines = [line for line in lines if not any([line.intersects(box) for box in boxes])]
 
@@ -403,7 +428,7 @@ class Box:
         n_numeric_cells = sum([box.Data_Type == 'numeric' for box in self.boxes()])
         n_valid_cells = sum([box.Data_Type in ('numeric', 'year', 'string') for box in self.boxes()])
         if n_valid_cells > 0:
-            is_text_table = n_numeric_cells / n_valid_cells < 0.3
+            is_text_table = n_numeric_cells / n_valid_cells < 0.1
 
         self.group_into_rows()
 
@@ -415,25 +440,37 @@ class Box:
         header = Box(box_type = 'text', sub_boxes = self.boxes()[:cutoff])
         data = Box(box_type = 'text', sub_boxes = self.boxes()[cutoff:]) 
         
-        header_tuples = [(round(box.x0, 1), round(box.y0, 1), round(box.x1, 1), round(box.y1, 1), box.text()) for i, box in enumerate(header.leaves())]
+        header_tuples = [(round(box.x0, 1), round(box.y0, 1), round(box.x1, 1), round(box.y1, 1), {'text': box.text(), 'size': box.Font_Size}) for i, box in enumerate(header.leaves())]
         divider = PageDivider(header_tuples, lines = [])
         blocks = divider.divide_into_blocks(advanced = True)
 
         header = Box(box_type = 'text', bbox = (header.x0, header.y0, header.x1, header.y1))
         new_boxes = []
         for block in blocks:
-            new_box = Box(bbox = (min([b[0] for b in block]), min([b[1] for b in block]), max([b[2] for b in block]), max([b[3] for b in block])), text = remove_double_spaces(' '.join([b[4] for b in block])))
+            new_box = Box(box_type = 'text',
+                          row_type = 'header', 
+                          bbox = (min([b[0] for b in block]), min([b[1] for b in block]), max([b[2] for b in block]), max([b[3] for b in block])), 
+                          text = remove_double_spaces(' '.join([b[4]['text'] for b in block])),
+                          font_size = max(b[4]['size'] for b in block))
             new_boxes.append(new_box)
         
         header = Box(box_type = 'text', sub_boxes = new_boxes)
 
         header.group_into_rows()
+        for row_box in header.boxes():
+            row_box.Row_Type = 'header'
+
+        for row_box in data.boxes():
+            row_box.Row_Type = 'data'
+
         self.Header_Cutoff = len(header.boxes())
+        
         if len(data.boxes()) > 0:
             self.Sub_Boxes = header.merge(data).boxes()
         else:
             self.Sub_Boxes = header.boxes()
 
+        
         
 
 
