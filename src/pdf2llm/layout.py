@@ -3,14 +3,20 @@ import fitz
 import layoutparser as lp
 import dataclasses
 from typing import Dict, Tuple, List
-from pdf2llm.reading_order import PageDivider
+from pdf2llm.reading_order import PageDivider, directional_gap_function
 
 import re
 
 re_units = re.compile('(trillion|million|billion|trn|bln|mln|tn|mn|bn|t|b|m|k)')
-re_symbols = re.compile('(%|\(|\)|\-|\,|\.|\—|\$|£|#)')
+re_symbols = re.compile('(%|\(|\)|\-|\,|\.|\—|\–|\$|£|#|\s)')
 re_years = re.compile("^((19|\')[7-9][0-9]|(20|\')[0-6][0-9])$")
 re_whitespace = re.compile('\s+')
+re_numbers = re.compile(r'-?\(?[0-9\.\,]+\)?( ?trillion\b| ?million\b| ?billion\b| ?trn\b| ?bln\b| ?mln\b| ?tn\b| ?mn\b| ?bn\b| ?t\b| ?b\b| ?m\b| ?k\b)?')
+
+def correct_numeric_box(text: str, x0: float, x1: float) -> List[Tuple[str, float, float]]:
+    box_width = x1 - x0
+    character_width = box_width / len(text)
+    return [(m.group(), x0 + character_width * m.start(), x0 + character_width * m.end()) for m in re_numbers.finditer(text)]
 
 def remove_double_spaces(s: str) -> str:
     return re_whitespace.sub(' ', s).strip()
@@ -26,7 +32,7 @@ def classify_data_type(s: str) -> str:
     s = re_symbols.sub('', s).strip()
     if s == '':
         return 'symbol'
-    elif s == 'na' or s == 'n/a' or s.isnumeric():
+    elif s == 'na' or s == 'n/a' or s == 'nm' or s.isnumeric():
         return 'numeric'
     else:
         return 'string'
@@ -62,7 +68,7 @@ def sub_boxes_to_box_type(sub_boxes: List[str]) -> str:
         return 'text'
 
 def styles_to_box_type(font_style: str, font_size: float, average_font_size: float) -> str:
-    if font_size < average_font_size - 1.5:
+    if font_size <= 5:
         return 'footnote'
     elif (font_size >= average_font_size + 2.0) or (abs(font_size - average_font_size) < 2.0 and font_style == 'bold'):
         return 'title'
@@ -223,6 +229,9 @@ class Box:
 
         self.Sub_Boxes = sub_boxes
         
+    def bbox(self) -> Tuple(float, float, float, float):
+        return (self.x0, self.y0, self.x1, self.y1)
+
     def size_x(self) -> float:
         return self.x1 - self.x0
     
@@ -395,7 +404,6 @@ class Box:
 
         for sub_box in self.Sub_Boxes:
             sub_box.sort_horizontal()
-            #sub_box.merge_sub_boxes()
 
         self.sort_vertical_mean()
 
@@ -426,29 +434,55 @@ class Box:
 
         self.Sub_Boxes = sorted_boxes
     
-    def format_table(self):
+    def format_table(self, drawing_boxes):
         assert self.type() == 'table'
         
         # check if it's a text table
         is_text_table = True
+        # remove blanks, symbols and footnotess
+        self.Sub_Boxes = [box for box in self.leaves() if (box.Data_Type not in ('blank', 'symbol')) and (box.Font_Size > 5.9)]
+        if len(self.boxes()) == 0:
+            return
+        for box in self.Sub_Boxes:
+            box.Sub_Boxes = []
+
+        new_sub_boxes = []
+
+        for box in self.boxes():
+            if box.Data_Type == 'numeric':
+                corrected_boxes = correct_numeric_box(box.text(), box.x0, box.x1)
+                for cb in corrected_boxes:
+                    new_box = Box(box_type = 'numeric', sub_boxes = [], bbox = (cb[1], box.y0, cb[2], box.y1),
+                                  text = cb[0], font_name = box.Font_Style, font_size = box.Font_Size, font_color = box.Font_Color)
+                    new_sub_boxes.append(new_box)
+            else:
+                new_sub_boxes.append(box)
+
+        self.Sub_Boxes = new_sub_boxes
+
         n_numeric_cells = sum([box.Data_Type == 'numeric' for box in self.boxes()])
         n_valid_cells = sum([box.Data_Type in ('numeric', 'year', 'string') for box in self.boxes()])
         if n_valid_cells > 0:
             is_text_table = n_numeric_cells / n_valid_cells < 0.1
 
         self.group_into_rows()
-
+        
         if is_text_table:
             cutoff = len(self.boxes())
         else:
             cutoff = table_header_cutoff(self.boxes())
 
+
         header = Box(box_type = 'text', sub_boxes = self.boxes()[:cutoff])
         data = Box(box_type = 'text', sub_boxes = self.boxes()[cutoff:]) 
         
         header_tuples = [(round(box.x0, 1), round(box.y0, 1), round(box.x1, 1), round(box.y1, 1), {'text': box.text(), 'size': box.Font_Size}) for i, box in enumerate(header.leaves())]
-        divider = PageDivider(header_tuples, lines = [])
-        blocks = divider.divide_into_blocks(advanced = True)
+
+        lines = merge_lines([d.side_upper() for d in drawing_boxes] + [d.side_lower() for d in drawing_boxes])
+        line_tuples = [(round(line.x0, 1), round(line.y0, 1), round(line.x1, 1), round(line.y1, 1)) for line in lines]
+
+        divider = PageDivider(header_tuples, lines = line_tuples, min_width = 0, all_lines = True)
+        blocks = divider.divide_into_blocks(advanced = False)
 
         header = Box(box_type = 'text', bbox = (header.x0, header.y0, header.x1, header.y1))
         new_boxes = []
@@ -469,12 +503,38 @@ class Box:
         for row_box in data.boxes():
             row_box.Row_Type = 'data'
 
+        # get columns
+        find_vertical_gaps = directional_gap_function(0)
+        data_boxes = []
+        for row in data.boxes():
+            if len(row.boxes()) == 1:
+                continue
+            proportion_numeric = len([b for b in row.boxes() if b.Data_Type == 'numeric']) / len(row.boxes())
+            if proportion_numeric < 0.5:
+                continue
+            data_boxes += [b.bbox() for b in row.boxes()]
+            
+        vertical_gaps = find_vertical_gaps(data_boxes)
+
+        vertical_gaps = [(0.0, self.x0)] + vertical_gaps + [(self.x1, float('inf'))]
+        column_bounds = [(a[1], b[0]) for a, b in zip(vertical_gaps[:-1], vertical_gaps[1:])]
+
+        column_boxes = [Box(bbox = (x0, self.y0, x1, self.y1)) for x0, x1 in column_bounds]
+
         self.Header_Cutoff = len(header.boxes())
         
         if len(data.boxes()) > 0:
             self.Sub_Boxes = header.merge(data).boxes()
         else:
             self.Sub_Boxes = header.boxes()
+
+        for row in self.Sub_Boxes:
+            if len(row.boxes()) >= len(column_boxes):
+                continue
+            for i, column in enumerate(column_boxes):
+                if not any([column.intersects(box) for box in row.boxes()]):
+                    empty_box = Box(box_type = 'numeric', bbox = (column.x0, row.y0, column.x1, row.y1), text = '-')
+                    row.Sub_Boxes = row.boxes()[:i] + [empty_box] + row.boxes()[i:]
 
         
         

@@ -84,6 +84,7 @@ def make_boolean_search_function(expr, case_sensitive = False):
     bool_expr = bool_alg.parse(translated_expr)
 
     def search_function(text):
+        text = text.replace('|', ' ')
         # Dictionary to store boolean values of each unique symbol in the expression
         symbol_values = {}
         for symbol in bool_expr.symbols:

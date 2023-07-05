@@ -24,7 +24,7 @@ def directional_gap_function(direction):
                         break
                 if is_gap:
                     gaps.append((coords[i], coords[i + 1]))
-
+        
         return gaps
     return f
 
@@ -57,13 +57,18 @@ def bboxes_to_sections(bboxes, gaps, direction):
     return res
 
 class PageDivider:
-    def __init__(self, bboxes, lines = [], min_width = 0.2):
+    def __init__(self, bboxes, lines = [], min_width = 0.2, all_lines = False):
+        self.Min_Width = min_width
+        self.All_Lines_Flag = all_lines
         self.Boxes = bboxes
         self.Lines = lines
         
         x_min = min([b[0] for b in bboxes])
         x_max = max([b[2] for b in bboxes])
-        self.Dividing_Lines = [l for l in lines if (l[0] <= x_min + (x_max - x_min) * 0.25) and (l[2] >= x_max - (x_max - x_min) * 0.25)]
+        if all_lines:
+            self.Dividing_Lines = lines
+        else:
+            self.Dividing_Lines = [l for l in lines if (l[0] <= x_min + (x_max - x_min) * 0.25) and (l[2] >= x_max - (x_max - x_min) * 0.25)]
 
         # FIX - x_max - x_min and y_max - y_min here?
         page_width = x_max + 20
@@ -233,7 +238,7 @@ class PageDivider:
                     max_x = max([b[2] for b in small_block])
                     
                     lines = [l for l in self.Lines if l[0] <= max_x and l[2] >= min_x]
-                    subdivider = PageDivider(small_block, lines = lines)
+                    subdivider = PageDivider(small_block, lines = lines, min_width = self.Min_Width, all_lines = self.All_Lines_Flag)
                     if advanced:
                         subdivider.merge_blocks()
                     small_block = subdivider.divide(advanced = True, recursive = recursive - 1)

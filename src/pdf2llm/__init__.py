@@ -6,7 +6,7 @@ import fitz
 import json
 import numpy as np
 import layoutparser as lp
-from typing import List, Optional
+from typing import List, Optional, Set
 import os
 import re
 import openai
@@ -37,7 +37,8 @@ def page_average_font_size(blocks: dict) -> float:
             for span in line['spans']:
                 total_size += span['size']
                 span_count += 1
-
+    if span_count == 0:
+        return 0
     return total_size / span_count
 
 def page_to_box(page, tables: List[List[float]] = []) -> Box:
@@ -85,12 +86,10 @@ def page_to_box(page, tables: List[List[float]] = []) -> Box:
         if len(sub_boxes) > 0:
             text_boxes.append(Box(sub_boxes = sub_boxes))
 
-    for table_box in table_boxes:
-        table_box.format_table()
-
     all_text_boxes = table_boxes + text_boxes
 
     drawing_boxes = []
+    
     for d in page.get_drawings():
         drawing_boxes.append(Box(box_type = 'drawing', bbox = tuple(d['rect'])))
     image_boxes = []
@@ -114,16 +113,21 @@ def page_to_box(page, tables: List[List[float]] = []) -> Box:
                 # add to the images
                 image_boxes.append(image_box)
 
+    for table_box in table_boxes:
+        dbs = [box for box in drawing_boxes if box.intersects(table_box)]
+            
+        table_box.format_table(dbs)
+
     # for drawings we take the lower and upper bounds to find the horizontal lines
     all_boxes = all_text_boxes + image_boxes + drawing_boxes
     res = Box(sub_boxes = all_boxes)
     
     return res
 
-def get_footer_strings(boxes: List[Box], min_count: int = 5):
+def get_footer_strings(boxes: List[Box], min_count: int = 5) -> Set[str]:
     # FIX - what about multiple footers?
     # FIX - headers?
-    footer_candidates = [normalize_text(box.text_boxes()[-1].text()) for box in boxes]
+    footer_candidates = [normalize_text(box.text_boxes()[-1].text()) for box in boxes if len(box.text_boxes()) > 0]
     
     counts = list_count(footer_candidates)
     res = set()
@@ -172,6 +176,7 @@ def detect_tables(page, model):
 class PDF:
     @staticmethod
     def from_fitz(document, tables: Optional[List[List]] = None, model = None):
+        table_border = 5
         if tables == None:
             if model == None:
                 model = lp.Detectron2LayoutModel('lp/config_large.yml',
@@ -181,7 +186,9 @@ class PDF:
 
         boxes = []
         for page_num, page, table in zip(range(len(document)), document, tables):
-            boxes.append(page_to_box(page, table))
+            # add a small border to the table in case it misses a heading
+            adjusted_table = [[t[0], t[1] - table_border, t[2], t[3]] for t in table]
+            boxes.append(page_to_box(page, adjusted_table))
         contents = contents_list(document, boxes)
 
         footer_strings = get_footer_strings(boxes)
@@ -322,7 +329,7 @@ def openai_embedding(text, model="text-embedding-ada-002"):
     return res
 
 def format_prompt(prompt, **kwargs):
-    return([{'role': field, 'content': prompt[field].format(**kwargs)} for field in prompt])
+    return([{'role': d['role'], 'content': d['content'].format(**kwargs)} for d in prompt])
 
 @dataclass
 class LLM:
