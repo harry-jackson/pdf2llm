@@ -41,15 +41,47 @@ def page_average_font_size(blocks: dict) -> float:
         return 0
     return total_size / span_count
 
+def derotate_bbox(bbox, derotation_matrix):
+    x0, y0, x1, y1 = bbox
+    x0, y0 = list(fitz.Point(x0, y0) * derotation_matrix)
+    x1, y1 = list(fitz.Point(x1, y1) * derotation_matrix)
+    return [min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)]
+
+
+def get_page_blocks(page):
+    blocks = json.loads(page.get_text(option = 'json', sort = True))['blocks']
+
+    for block in blocks:
+        block['bbox'] = derotate_bbox(block['bbox'], page.rotation_matrix)
+        if 'lines' in block:
+            for line in block['lines']:
+                line['bbox'] = derotate_bbox(line['bbox'], page.rotation_matrix)
+
+                if 'spans' in line:
+                    for span in line['spans']:
+                        span['bbox'] = derotate_bbox(span['bbox'], page.rotation_matrix)
+    return blocks
+
 def page_to_box(page, tables: List[List[float]] = []) -> Box:
     
-    blocks = json.loads(page.get_text(option = 'json', sort = True))['blocks']
+    blocks = get_page_blocks(page)
 
     average_font_size = page_average_font_size(blocks)
     text_boxes = []
     table_boxes = []
-    for t  in tables:
+    for t in tables:
         table_boxes.append(Box(box_type = 'table', bbox = tuple(t)))
+
+    # find true extent of tables
+    for block_id, block in enumerate(blocks):
+        if 'lines' not in block:
+            continue
+
+        new_box = Box(box_type = 'text', 
+                        bbox = tuple(block['bbox']))
+        for table_box_id, table_box in enumerate(table_boxes):
+            if table_box.intersects(new_box):
+                table_boxes[table_box_id] = table_box.merge_x(new_box)
 
     for block_id, block in enumerate(blocks):
 
@@ -60,7 +92,7 @@ def page_to_box(page, tables: List[List[float]] = []) -> Box:
             sub_boxes = []
             for line in block['lines']:
                 # filter out text lines at an angle
-                if abs(line['dir'][1]) > 0.1:
+                if False and page.rotation == 0 and abs(line['dir'][1]) > 0.1:
                     continue
                 for span in line['spans']:
                     new_box = Box(box_type = 'text', 
@@ -165,7 +197,7 @@ def box_to_pdf_data(box, page_number, section_title) -> dict:
     return res
 
 def detect_tables(page, model):
-    pix = page.get_pixmap()
+    pix = page.get_pixmap(matrix = page.rotation_matrix)
     pix = np.frombuffer(buffer=pix.samples, dtype=np.uint8).reshape((pix.height, pix.width, -1))
     layout = model.detect(pix)
 
@@ -175,12 +207,12 @@ def detect_tables(page, model):
 
 class PDF:
     @staticmethod
-    def from_fitz(document, tables: Optional[List[List]] = None, model = None):
+    def from_fitz(document, tables: Optional[List[List]] = None, model = None, threshold = 0.7):
         table_border = 5
         if tables == None:
             if model == None:
                 model = lp.Detectron2LayoutModel('lp/config_large.yml',
-                    extra_config=["MODEL.ROI_HEADS.SCORE_THRESH_TEST", 0.7],
+                    extra_config=["MODEL.ROI_HEADS.SCORE_THRESH_TEST", threshold],
                     label_map={0: "Text", 1: "Title", 2: "List", 3:"Table", 4:"Figure"})
             tables = [detect_tables(page, model) for page in document]
 

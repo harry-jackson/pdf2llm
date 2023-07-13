@@ -4,6 +4,7 @@ import layoutparser as lp
 import dataclasses
 from typing import Dict, Tuple, List
 from pdf2llm.reading_order import PageDivider, directional_gap_function
+from numpy import median
 
 import re
 
@@ -68,7 +69,7 @@ def sub_boxes_to_box_type(sub_boxes: List[str]) -> str:
         return 'text'
 
 def styles_to_box_type(font_style: str, font_size: float, average_font_size: float) -> str:
-    if font_size <= 5:
+    if font_size < 5.5:
         return 'footnote'
     elif (font_size >= average_font_size + 2.0) or (abs(font_size - average_font_size) < 2.0 and font_style == 'bold'):
         return 'title'
@@ -277,10 +278,13 @@ class Box:
     def aligned_y(self, box: Box, threshold: float = 0.5) -> bool:
         return self.intersection_y(box) > min(self.size_y(), box.size_y()) * 0.5
     
-    def merge(self, box: Box) -> Box:
+    def merge(self, box: Box, merge_text = True) -> Box:
         if self.is_leaf() and box.is_leaf():
             bbox = (min(self.x0, box.x0), min(self.y0, box.y0), max(self.x1, box.x1), max(self.y1, box.y1))
-            text = remove_double_spaces(self.text() + ' ' + box.text())
+            if merge_text:
+                text = remove_double_spaces(self.text() + ' ' + box.text())
+            else:
+                text = self.text()
             return Box(box_type = self.type(), bbox = bbox, text = text)
         
         elif (not self.is_leaf()) and (not box.is_leaf()):
@@ -289,6 +293,9 @@ class Box:
         else:
             raise Exception('Can only merge leaves with leaves or non-leaves with non-leaves.')
 
+    def merge_x(self, box: Box) -> Box:
+        bbox = (min(self.x0, box.x0), self.y0, max(self.x1, box.x1), self.y1)
+        return Box(box_type = self.type(), bbox = bbox, text = self.text())
 
     def is_leaf(self) -> bool:
         return self.Sub_Boxes == []
@@ -439,8 +446,8 @@ class Box:
         
         # check if it's a text table
         is_text_table = True
-        # remove blanks, symbols and footnotess
-        self.Sub_Boxes = [box for box in self.leaves() if (box.Data_Type not in ('blank', 'symbol')) and (box.Font_Size > 5.9)]
+        # remove blanks and symbols
+        self.Sub_Boxes = [box for box in self.leaves() if (box.Data_Type not in ('blank', 'symbol')) and (process_cell_text(box.text()) != '')]
         if len(self.boxes()) == 0:
             return
         for box in self.Sub_Boxes:
@@ -466,6 +473,14 @@ class Box:
             is_text_table = n_numeric_cells / n_valid_cells < 0.1
 
         self.group_into_rows()
+
+        # cut footnotes
+        for i, row in enumerate(self.Sub_Boxes):
+            if len(row.boxes()) < 3:
+                continue
+            median_size = float(median([cell.Font_Size for cell in row.boxes()]))
+            new_row = [cell for cell in row.boxes() if cell.Font_Size > median_size - 1.5]
+            self.Sub_Boxes[i] = Box(sub_boxes = new_row)
         
         if is_text_table:
             cutoff = len(self.boxes())
