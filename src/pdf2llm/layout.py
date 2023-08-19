@@ -1,6 +1,5 @@
 from __future__ import annotations
 import fitz
-import layoutparser as lp
 import dataclasses
 from typing import Dict, Tuple, List
 from pdf2llm.reading_order import PageDivider, directional_gap_function
@@ -257,6 +256,9 @@ class Box:
     def intersection_area(self, box: Box):
         return self.intersection_x(box) * self.intersection_y(box)
     
+    def intersection_area_percentage(self, box: Box):
+        return self.intersection_area(box) / min(self.area(), box.area())
+    
     def intersects_x(self, box: Box) -> bool:
         return self.intersection_x(box) > 0
     
@@ -278,6 +280,12 @@ class Box:
     def aligned_y(self, box: Box, threshold: float = 0.5) -> bool:
         return self.intersection_y(box) > min(self.size_y(), box.size_y()) * 0.5
     
+    def trim_border(self):
+        self.x0 = min([box.x0 for box in self.boxes()])
+        self.x1 = max([box.x1 for box in self.boxes()])
+        self.y0 = min([box.y0 for box in self.boxes()])
+        self.y1 = max([box.y1 for box in self.boxes()])
+
     def merge(self, box: Box, merge_text = True) -> Box:
         if self.is_leaf() and box.is_leaf():
             bbox = (min(self.x0, box.x0), min(self.y0, box.y0), max(self.x1, box.x1), max(self.y1, box.y1))
@@ -441,7 +449,7 @@ class Box:
 
         self.Sub_Boxes = sorted_boxes
     
-    def format_table(self, drawing_boxes):
+    def format_table(self, drawing_boxes = [], canonicalize_header = True):
         assert self.type() == 'table'
         
         # check if it's a text table
@@ -476,9 +484,12 @@ class Box:
 
         # cut footnotes
         for i, row in enumerate(self.Sub_Boxes):
-            if len(row.boxes()) < 3:
+            if len(row.boxes()) == 1:
                 continue
-            median_size = float(median([cell.Font_Size for cell in row.boxes()]))
+            elif len(row.boxes()) == 2:
+                median_size = float(max([cell.Font_Size for cell in row.boxes()]))
+            else:
+                median_size = float(median([cell.Font_Size for cell in row.boxes()]))
             new_row = [cell for cell in row.boxes() if cell.Font_Size > median_size - 1.5]
             self.Sub_Boxes[i] = Box(sub_boxes = new_row)
         
@@ -491,25 +502,28 @@ class Box:
         header = Box(box_type = 'text', sub_boxes = self.boxes()[:cutoff])
         data = Box(box_type = 'text', sub_boxes = self.boxes()[cutoff:]) 
         
-        header_tuples = [(round(box.x0, 1), round(box.y0, 1), round(box.x1, 1), round(box.y1, 1), {'text': box.text(), 'size': box.Font_Size}) for i, box in enumerate(header.leaves())]
+        if canonicalize_header:
+            header_tuples = [(round(box.x0, 1), round(box.y0, 1), round(box.x1, 1), round(box.y1, 1), {'text': box.text(), 'size': box.Font_Size}) for i, box in enumerate(header.leaves())]
 
-        lines = merge_lines([d.side_upper() for d in drawing_boxes] + [d.side_lower() for d in drawing_boxes])
-        line_tuples = [(round(line.x0, 1), round(line.y0, 1), round(line.x1, 1), round(line.y1, 1)) for line in lines]
+            lines = merge_lines([d.side_upper() for d in drawing_boxes] + [d.side_lower() for d in drawing_boxes])
+            line_tuples = [(round(line.x0, 1), round(line.y0, 1), round(line.x1, 1), round(line.y1, 1)) for line in lines]
 
-        divider = PageDivider(header_tuples, lines = line_tuples, min_width = 0, all_lines = True)
-        blocks = divider.divide_into_blocks(advanced = False)
-
-        header = Box(box_type = 'text', bbox = (header.x0, header.y0, header.x1, header.y1))
-        new_boxes = []
-        for block in blocks:
-            new_box = Box(box_type = 'text',
-                          row_type = 'header', 
-                          bbox = (min([b[0] for b in block]), min([b[1] for b in block]), max([b[2] for b in block]), max([b[3] for b in block])), 
-                          text = remove_double_spaces(' '.join([b[4]['text'] for b in block])),
-                          font_size = max(b[4]['size'] for b in block))
-            new_boxes.append(new_box)
+            divider = PageDivider(header_tuples, lines = line_tuples, min_width = 0, all_lines = True)
         
-        header = Box(box_type = 'text', sub_boxes = new_boxes)
+            blocks = divider.divide_into_blocks(advanced = False)
+
+
+            header = Box(box_type = 'text', bbox = (header.x0, header.y0, header.x1, header.y1))
+            new_boxes = []
+            for block in blocks:
+                new_box = Box(box_type = 'text',
+                            row_type = 'header', 
+                            bbox = (min([b[0] for b in block]), min([b[1] for b in block]), max([b[2] for b in block]), max([b[3] for b in block])), 
+                            text = remove_double_spaces(' '.join([b[4]['text'] for b in block])),
+                            font_size = max(b[4]['size'] for b in block))
+                new_boxes.append(new_box)
+            
+            header = Box(box_type = 'text', sub_boxes = new_boxes)
 
         header.group_into_rows()
         for row_box in header.boxes():
