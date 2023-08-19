@@ -321,7 +321,7 @@ def detect_tables(page, blocks, model):
     tables_to_remove = []
     for table_index, table in enumerate(table_candidates):
         for span_box in span_boxes:
-            if span_box.intersection_area(table) > 0.25:
+            if span_box.intersection_area_percentage(table) > 0.25:
                 table.add_sub_box(span_box)
         table.group_into_rows()
         data_types = []
