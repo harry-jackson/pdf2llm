@@ -257,6 +257,8 @@ class Box:
         return self.intersection_x(box) * self.intersection_y(box)
     
     def intersection_area_percentage(self, box: Box):
+        if self.area() * box.area() == 0:
+            return 0
         return self.intersection_area(box) / min(self.area(), box.area())
     
     def intersects_x(self, box: Box) -> bool:
