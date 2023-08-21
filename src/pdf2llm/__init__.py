@@ -323,6 +323,14 @@ def detect_tables(page, blocks, model):
         for span_box in span_boxes:
             if span_box.intersection_area_percentage(table) > 0.25:
                 table.add_sub_box(span_box)
+        if len(table.boxes()) == 0:
+            tables_to_remove.append(table_index)
+            continue
+        
+        table.x0 = min([box.x0 for box in table.boxes()])
+        table.x1 = max([box.x1 for box in table.boxes()])
+        table.y0 = min([box.y0 for box in table.boxes()])
+        table.y1 = max([box.y1 for box in table.boxes()])
         table.group_into_rows()
         data_types = []
         for row in table.boxes():
@@ -340,12 +348,15 @@ def detect_tables(page, blocks, model):
     for box_index, box in enumerate(res):
         # make box from bottom of table to end of page
         extended_box = Box(box_type = 'table', bbox = (box.x0, box.y1, box.x1, page.rect.height))
-
+        next_index = box_index
         # cut box with top of any boxes lower
         for lower_box in res[(box_index + 1):]:
+            next_index+=1
+            
             if lower_box.y0 <= extended_box.y0:
                 continue
             elif lower_box.y0 > extended_box.y1:
+                
                 break
             elif extended_box.intersection_area_percentage(lower_box) > 0.25:
                 extended_box = Box(box_type = 'table', bbox = (extended_box.x0, extended_box.y0, extended_box.x1, lower_box.y0))
@@ -361,9 +372,13 @@ def detect_tables(page, blocks, model):
             elif (extended_box.intersection_x(block_box) > 0.25 * extended_box.size_x()) and (block_box.intersection_x(extended_box) < 0.75 * block_box.size_x()):
                 extended_box = Box(box_type = 'table', bbox = (extended_box.x0, extended_box.y0, extended_box.x1, block_box.y0))
                 break
-
+        if page.number == 17:
+            print(f'{box_index} ---')
         # group extended_box into rows
         for span_box in span_boxes:
+            if page.number == 17:
+                
+                print(span_box.text())
             if span_box.intersection_area(extended_box) > 0.25:
                 extended_box.add_sub_box(span_box)
 
@@ -423,7 +438,7 @@ def detect_tables(page, blocks, model):
 
         # cut box with top of any boxes higher
         for higher_box in res[:box_index]:
-            if higher_box.y1 > extended_box.y1:
+            if higher_box.y1 <= extended_box.y0:
                 continue
             elif higher_box.y0 > extended_box.y1:
                 break
@@ -433,7 +448,7 @@ def detect_tables(page, blocks, model):
         
         # cut box with any blocks that overlap and extend a certain amount horizontally outside the box
         for block_box in block_boxes:
-            if block_box.y1 > extended_box.y1:
+            if block_box.y1 <= extended_box.y0:
                 continue
             elif block_box.y0 > extended_box.y1:
                 break
@@ -499,6 +514,7 @@ def detect_tables(page, blocks, model):
         res[box_index] = box
 
     res = sorted(res, key = lambda box: box.y0)
+
     # merge tables
     for table_index, table in enumerate(res):
         if table_index == 0:
@@ -535,14 +551,10 @@ def detect_tables(page, blocks, model):
                         gap_box = Box(bbox = (min(table.x0, higher_table.x0), higher_table.y1, max(table.x1, higher_table.x1), table.y0))
                         for span_box in span_boxes:
                             if span_box.intersection_area(gap_box) > 0.25:
-                                if page.number == 21:
-                                    print('something in the way')
                                 merge_tables = False
                                 break
 
                         if merge_tables:
-                            if page.number == 21:
-                                print('doing the merge')
                             new_table = Box(bbox = (min(higher_table.x0, table.x0), min(higher_table.y0, table.y0), 
                                                 max(higher_table.x1, table.x1), max(higher_table.y1, table.y1)))
                             res[table_index] = new_table
