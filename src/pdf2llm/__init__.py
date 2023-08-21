@@ -1,5 +1,5 @@
 from __future__ import annotations
-from pdf2llm.layout import Box, classify_data_type, correct_numeric_box
+from pdf2llm.layout import Box, classify_data_type, remove_double_spaces
 from pdf2llm.contents import contents_list
 from pdf2llm.search import VectorStore, make_simple_search_function, make_boolean_search_function, make_regex_search_function
 import fitz
@@ -13,8 +13,11 @@ import openai
 from dataclasses import dataclass
 from time import sleep
 from huggingface_hub import hf_hub_download
-from transformers import DetrFeatureExtractor, TableTransformerForObjectDetection
+from transformers import DetrFeatureExtractor, TableTransformerForObjectDetection, AutoTokenizer, AutoModel
+from sentence_transformers import SentenceTransformer
 import torch
+from torch import Tensor
+import torch.nn.functional as F
 
 re_not_alpha = re.compile('[^a-zA-Z]')
 
@@ -578,6 +581,8 @@ def detect_tables(page, blocks, model):
 
     return [b.bbox() for b in res if b.area() > 0]
 
+re_last_character = re.compile('[^\s]\s*$')
+re_first_character = re.compile('^\s*[^\s]')
 class PDF:
     @staticmethod
     def from_fitz(document, tables: Optional[List[List]] = None, threshold = 0.7):
@@ -605,6 +610,31 @@ class PDF:
         data = []
         for page_number, (box, section_title) in enumerate(zip(boxes, contents)):
             box.sort_reading_order()
+            
+            # merge paragraphs
+            if len(box.boxes()) > 1:
+                merged_box = Box(sub_boxes = [box.boxes()[0]])
+                for box_0, box_1 in zip(box.boxes()[:-1], box.boxes()[1:]):
+
+                    if box_0.is_table() or box_1.is_table():
+                        merged_box.add_sub_box(box_1)
+                        continue
+                    last_character = re_last_character.findall(box_0.text())
+                    first_character = re_first_character.findall(box_1.text())
+                    if len(last_character) * len(first_character) == 0:
+                        merged_box.add_sub_box(box_1)
+                        continue
+
+                    last_character = last_character[0].strip()
+                    first_character = first_character[0].strip()
+                    if last_character not in '.?!:' and first_character in 'abcdefghijklmnopqrstuvwxyz':
+                        new_box = Box(bbox = merged_box.Sub_Boxes[-1].bbox(), 
+                                      text = box_1.text())
+                        merged_box.Sub_Boxes[-1].add_sub_box(new_box)
+                    else:
+                        merged_box.add_sub_box(box_1)
+
+                box = merged_box
             data += box_to_pdf_data(box, page_number, section_title)
 
         res = {'data': data, 'tables': tables}
@@ -736,6 +766,35 @@ def openai_embedding(text, model="text-embedding-ada-002"):
             repeats += 1
             sleep(1)
     return res
+
+def average_pool(last_hidden_states: Tensor,
+                 attention_mask: Tensor) -> Tensor:
+    last_hidden = last_hidden_states.masked_fill(~attention_mask[..., None].bool(), 0.0)
+    return last_hidden.sum(dim=1) / attention_mask.sum(dim=1)[..., None]
+
+
+def get_hf_embedding_function(model_name = 'intfloat/e5-small-v2'):
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModel.from_pretrained(model_name)
+
+    def hf_embedding(text):
+        with torch.no_grad():
+            batch_dict = tokenizer(['passage: ' + text], max_length=512, padding=True, truncation=True, return_tensors='pt')
+            outputs = model(**batch_dict)
+            embeddings = average_pool(outputs.last_hidden_state, batch_dict['attention_mask'])
+            embeddings = F.normalize(embeddings, p=2, dim=1)
+        return embeddings[0].numpy()
+
+    return hf_embedding
+
+def get_sbert_embedding_function(model_name = 'all-mpnet-base-v2'):
+    model = SentenceTransformer(model_name)
+
+    def sbert_embedding(text):
+        embedding = model.encode([text])
+        return embedding[0]
+    
+    return sbert_embedding
 
 def format_prompt(prompt, **kwargs):
     return([{'role': d['role'], 'content': d['content'].format(**kwargs)} for d in prompt])

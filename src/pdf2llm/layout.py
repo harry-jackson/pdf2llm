@@ -288,9 +288,13 @@ class Box:
         self.y0 = min([box.y0 for box in self.boxes()])
         self.y1 = max([box.y1 for box in self.boxes()])
 
-    def merge(self, box: Box, merge_text = True) -> Box:
+    def merge(self, box: Box, merge_text = True, merge_bbox = True) -> Box:
         if self.is_leaf() and box.is_leaf():
-            bbox = (min(self.x0, box.x0), min(self.y0, box.y0), max(self.x1, box.x1), max(self.y1, box.y1))
+            if merge_bbox:
+                bbox = (min(self.x0, box.x0), min(self.y0, box.y0), max(self.x1, box.x1), max(self.y1, box.y1))
+            else:
+                bbox = self.bbox()
+                
             if merge_text:
                 text = remove_double_spaces(self.text() + ' ' + box.text())
             else:
