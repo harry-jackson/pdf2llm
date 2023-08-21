@@ -323,9 +323,23 @@ def detect_tables(page, blocks, model):
     # remove non-tables
     tables_to_remove = []
     for table_index, table in enumerate(table_candidates):
+        # CHECK THIS BIT vvv
+        for block_box in block_boxes:
+            if block_box.intersection_area_percentage(table) > 0.25:
+                table.add_sub_box(block_box)
+        if len(table.boxes()) == 0:
+            tables_to_remove.append(table_index)
+            continue
+        table.x0 = min([box.x0 for box in table.boxes()])
+        table.x1 = max([box.x1 for box in table.boxes()])
+        table.y0 = min([box.y0 for box in table.boxes()])
+        table.y1 = max([box.y1 for box in table.boxes()])
+        table.Sub_Boxes = []
+        # CHECK THIS BIT ^^^
         for span_box in span_boxes:
             if span_box.intersection_area_percentage(table) > 0.25:
                 table.add_sub_box(span_box)
+        
         if len(table.boxes()) == 0:
             tables_to_remove.append(table_index)
             continue
@@ -349,6 +363,8 @@ def detect_tables(page, blocks, model):
 
     # extending tables downward
     for box_index, box in enumerate(res):
+        if page.number == 17:
+            print(f'{box_index} ---')
         # make box from bottom of table to end of page
         extended_box = Box(box_type = 'table', bbox = (box.x0, box.y1, box.x1, page.rect.height))
         next_index = box_index
@@ -362,6 +378,8 @@ def detect_tables(page, blocks, model):
                 
                 break
             elif extended_box.intersection_area_percentage(lower_box) > 0.25:
+                if page.number == 17:
+                    print('y')
                 extended_box = Box(box_type = 'table', bbox = (extended_box.x0, extended_box.y0, extended_box.x1, lower_box.y0))
                 break
         
@@ -374,15 +392,21 @@ def detect_tables(page, blocks, model):
                 break
             elif (extended_box.intersection_x(block_box) > 0.25 * extended_box.size_x()) and (block_box.intersection_x(extended_box) < 0.75 * block_box.size_x()):
                 extended_box = Box(box_type = 'table', bbox = (extended_box.x0, extended_box.y0, extended_box.x1, block_box.y0))
+                if page.number == 17:
+                    print('x')
+                    print(block_box.text())
                 break
         if page.number == 17:
-            print(f'{box_index} ---')
+            print(extended_box.bbox())
+            print(page.rect.width)
+            print(page.rect.height)
         # group extended_box into rows
         for span_box in span_boxes:
-            if page.number == 17:
-                
-                print(span_box.text())
+            
             if span_box.intersection_area(extended_box) > 0.25:
+                if page.number == 17:
+                
+                    print(span_box.text())
                 extended_box.add_sub_box(span_box)
 
         extended_box.group_into_rows()
@@ -404,9 +428,6 @@ def detect_tables(page, blocks, model):
 
         # from bottom of box, find first line that is sparse numeric row
         # cut box at bottom of that line
-        #for row in extended_box.Sub_Boxes:
-        #    print([box.text() for box in row.boxes()])
-        #    print(row_type(row, extended_box.x0, extended_box.x1))
         row_types = [row_type(row, extended_box.x0, extended_box.x1) for row in extended_box.Sub_Boxes]
         if all([row_type != 'data' for row_type in row_types]):
             continue
@@ -469,10 +490,6 @@ def detect_tables(page, blocks, model):
         y = extended_box.y1
         last_index = len(extended_box.Sub_Boxes)
         for i, row in reversed(list(enumerate(extended_box.Sub_Boxes))):
-            #if 'using the proportional amortization method such that the' in row.boxes()[0].text():
-            #    1
-            #    print(horizontal_coverage(row, extended_box.x0, extended_box.x1))
-            #    print(row_type(row, extended_box.x0, extended_box.x1))
             # cut box with any vertical gaps greater than x% of page
             if row.y1 - y > 0.05 * page.rect.height or horizontal_coverage(row, extended_box.x0, extended_box.x1) > 0.75:
 
@@ -486,9 +503,6 @@ def detect_tables(page, blocks, model):
 
         # from bottom of box, find first line that is sparse numeric row
         # cut box at bottom of that line
-        #for row in extended_box.Sub_Boxes:
-        #    print([box.text() for box in row.boxes()])
-        #    print(row_type(row, extended_box.x0, extended_box.x1))
         row_types = [row_type(row, extended_box.x0, extended_box.x1) for row in extended_box.Sub_Boxes]
         if all([row_type == 'unknown' for row_type in row_types]):
             
