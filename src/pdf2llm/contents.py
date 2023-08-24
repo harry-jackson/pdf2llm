@@ -3,6 +3,7 @@ import re
 from typing import List
 
 def contents_page(doc, pages_to_check: int = 10, min_links: int = 5) -> int:
+    pages_to_check = min(pages_to_check, len(doc))
     for i in range(pages_to_check):
         page = doc[i]
         links = page.get_links()
@@ -70,6 +71,8 @@ def process_links(page, all_boxes) -> dict:
     
 def contents_list(doc, boxes = List[Box]) -> List[str]:
     p = contents_page(doc)
+    if p < 0:
+        return [''] * len(doc)
     page = doc[p]
     page_boxes = boxes[p].leaves()
     links = process_links(page, page_boxes)

@@ -133,7 +133,8 @@ def page_to_box(page, blocks, drawings, tables: List[List[float]] = []) -> Box:
                     add_to_sub_boxes = True
                     for table_box_id, table_box in enumerate(table_boxes):
                         
-                        if (table_box_id, block_id) not in excluded_block_ids and table_box.intersection_area_percentage(new_box) > 0.25:
+                        if (table_box_id, block_id) not in excluded_block_ids and table_box.intersection_area_percentage(new_box) > 0.1:
+
                             table_box.add_sub_box(new_box)
                             
                             add_to_sub_boxes = False
@@ -236,17 +237,28 @@ def box_to_pdf_data(box, page_number, section_title) -> dict:
     return res
 
 double_blanks = re.compile('\s+')
-def horizontal_coverage(row, x0, x1):
+def horizontal_coverage(row, x0 = -1.0, x1 = -1.0):
+    if x0 < 0:
+        x0 = row.x0
+    if x1 < 0:
+        x1 = row.x1
+
     all_chars = ''
     for box in row.Sub_Boxes:
         all_chars += box.text()
     string_length = len(all_chars)
-    
+    if string_length == 0:
+        return 0.0
     blank_length = sum([len(s) for s in double_blanks.findall(all_chars)])
     blank_adjustment = 1 - (blank_length / string_length)
     return blank_adjustment * sum([box.size_x() for box in row.Sub_Boxes if box.text() != '']) / (x1 - x0)
 
-def row_type(row, x0, x1):
+def row_type(row, x0 = -1.0, x1 = -1.0):
+    if x0 < 0:
+        x0 = row.x0
+    if x1 < 0:
+        x1 = row.x1
+
     boxes = row.Sub_Boxes
 
     # footnotes
@@ -314,7 +326,19 @@ def detect_tables(page, blocks, model):
         res.append(next_box)
         table_candidates.append(next_box)
 
-    block_boxes = [Box(bbox = block['bbox']) for block in blocks]
+    block_boxes = []
+    for block in blocks:
+        if 'lines' not in block:
+            continue
+        block_spans = get_block_spans(block)
+        block_box = Box(sub_boxes = [Box(text = span['text'], bbox = tuple(span['bbox'])) for span in block_spans])
+        block_box.group_into_rows()
+        
+        if any([horizontal_coverage(line_box) < 0.75 and row_type(line_box) == 'data' for line_box in block_box.boxes()]):
+            
+            block_boxes.append(Box(bbox = block['bbox']))
+    # THIS BIT
+    #block_boxes = [Box(bbox = block['bbox']) for block in blocks]
     block_boxes = sorted(block_boxes, key = lambda box: box.y0)
     # take tables in vertical order
     res = sorted(res, key = lambda box: box.y0)
@@ -324,16 +348,12 @@ def detect_tables(page, blocks, model):
     tables_to_remove = []
     for table_index, table in enumerate(table_candidates):
         # CHECK THIS BIT vvv
-        for block_box in block_boxes:
-            if block_box.intersection_area_percentage(table) > 0.25:
-                table.add_sub_box(block_box)
-        if len(table.boxes()) == 0:
+        intersection_blocks = [block_box for block_box in block_boxes if block_box.intersection_area_percentage(table) > 0.25]
+        if len(intersection_blocks) == 0:
             tables_to_remove.append(table_index)
             continue
-        table.x0 = min([box.x0 for box in table.boxes()])
-        table.x1 = max([box.x1 for box in table.boxes()])
-        table.y0 = min([box.y0 for box in table.boxes()])
-        table.y1 = max([box.y1 for box in table.boxes()])
+        table.x0 = min([box.x0 for box in intersection_blocks])
+        table.x1 = max([box.x1 for box in intersection_blocks])
         table.Sub_Boxes = []
         # CHECK THIS BIT ^^^
         for span_box in span_boxes:
@@ -344,6 +364,9 @@ def detect_tables(page, blocks, model):
             tables_to_remove.append(table_index)
             continue
         
+        # remove bad blocks
+
+
         table.x0 = min([box.x0 for box in table.boxes()])
         table.x1 = max([box.x1 for box in table.boxes()])
         table.y0 = min([box.y0 for box in table.boxes()])
@@ -361,10 +384,15 @@ def detect_tables(page, blocks, model):
             
     res = [r for i, r in enumerate(res) if i not in tables_to_remove]
 
+    for block in blocks:
+        if 'lines' not in block:
+            continue
+        block_spans = get_block_spans(block)
+        block_box = Box(sub_boxes = [Box(text = span['text'], bbox = tuple(span['bbox'])) for span in block_spans])
+        block_boxes.append(block_box)
+    block_boxes = sorted(block_boxes, key = lambda box: box.y0)
     # extending tables downward
     for box_index, box in enumerate(res):
-        if page.number == 17:
-            print(f'{box_index} ---')
         # make box from bottom of table to end of page
         extended_box = Box(box_type = 'table', bbox = (box.x0, box.y1, box.x1, page.rect.height))
         next_index = box_index
@@ -378,35 +406,28 @@ def detect_tables(page, blocks, model):
                 
                 break
             elif extended_box.intersection_area_percentage(lower_box) > 0.25:
-                if page.number == 17:
-                    print('y')
+                
                 extended_box = Box(box_type = 'table', bbox = (extended_box.x0, extended_box.y0, extended_box.x1, lower_box.y0))
                 break
-        
+
         # cut box with any blocks that overlap and extend a certain amount horizontally outside the box
         
         for block_box in block_boxes:
+
             if block_box.y0 <= extended_box.y0:
                 continue
             elif block_box.y0 > extended_box.y1:
                 break
             elif (extended_box.intersection_x(block_box) > 0.25 * extended_box.size_x()) and (block_box.intersection_x(extended_box) < 0.75 * block_box.size_x()):
                 extended_box = Box(box_type = 'table', bbox = (extended_box.x0, extended_box.y0, extended_box.x1, block_box.y0))
-                if page.number == 17:
-                    print('x')
-                    print(block_box.text())
                 break
-        if page.number == 17:
-            print(extended_box.bbox())
-            print(page.rect.width)
-            print(page.rect.height)
+
+
         # group extended_box into rows
         for span_box in span_boxes:
             
             if span_box.intersection_area(extended_box) > 0.25:
-                if page.number == 17:
-                
-                    print(span_box.text())
+
                 extended_box.add_sub_box(span_box)
 
         extended_box.group_into_rows()
@@ -444,11 +465,10 @@ def detect_tables(page, blocks, model):
             if not extended_box.intersects(Box(bbox = block['bbox'])):
                 continue
             block_spans = get_block_spans(block)
-            span_intersects = [extended_box.intersection_area(Box(bbox = span['bbox'])) > 0.1 for span in block_spans]
+            span_intersects = [extended_box.intersection_area_percentage(Box(bbox = span['bbox'])) > 0.1 for span in block_spans]
             if any(span_intersects) and not all(span_intersects):
-                extended_box.y1 = min(extended_box.y1, block['bbox'][1])
+                extended_box.y1 = max(extended_box.y0, min(extended_box.y1, block['bbox'][1]))
                 extended_box.Sub_Boxes = [box for box in extended_box.Sub_Boxes if box.y1 <= extended_box.y1]
-                
 
         # merge box with table
         box.y1 = extended_box.y1
@@ -471,14 +491,19 @@ def detect_tables(page, blocks, model):
                 break
         
         # cut box with any blocks that overlap and extend a certain amount horizontally outside the box
+        
         for block_box in block_boxes:
+            
             if block_box.y1 <= extended_box.y0:
                 continue
             elif block_box.y0 > extended_box.y1:
                 break
+            elif not any([extended_box.intersects(span_box) for span_box in block_box.boxes()]):
+                continue
             elif (extended_box.intersection_x(block_box) > 0.25 * extended_box.size_x()) and (block_box.intersection_x(extended_box) < 0.75 * block_box.size_x()):
-                extended_box = Box(box_type = 'table', bbox = (extended_box.x0, block_box.y1, extended_box.x1, extended_box.y1))
-                break
+                intersecting_boxes = [span_box for span_box in block_box.boxes() if span_box.intersects(extended_box)]
+                new_y0 = max([b.y1 for b in intersecting_boxes])
+                extended_box = Box(box_type = 'table', bbox = (extended_box.x0, new_y0, extended_box.x1, extended_box.y1))
         
         # group extended_box into rows
         for span_box in span_boxes:
@@ -501,17 +526,21 @@ def detect_tables(page, blocks, model):
         extended_box.Sub_Boxes = extended_box.Sub_Boxes[last_index:]
         extended_box.y1 = y
 
+        
         # from bottom of box, find first line that is sparse numeric row
         # cut box at bottom of that line
         row_types = [row_type(row, extended_box.x0, extended_box.x1) for row in extended_box.Sub_Boxes]
         if all([row_type == 'unknown' for row_type in row_types]):
-            
+
             continue
             1
         else:
             index = min([row_index for row_index, row_type in enumerate(row_types) if row_type != 'unknown'])
+
             extended_box.y0 = extended_box.Sub_Boxes[index].y0
             extended_box.Sub_Boxes = extended_box.Sub_Boxes[index:]
+
+        
 
         # check blocks 16, 25, 27
         for block in blocks:
@@ -520,9 +549,9 @@ def detect_tables(page, blocks, model):
             if not extended_box.intersects(Box(bbox = block['bbox'])):
                 continue
             block_spans = get_block_spans(block)
-            span_intersects = [extended_box.intersection_area(Box(bbox = span['bbox'])) > 0.1 for span in block_spans]
+            span_intersects = [extended_box.intersection_area_percentage(Box(bbox = span['bbox'])) > 0.1 for span in block_spans]
             if any(span_intersects) and not all(span_intersects):
-                extended_box.y0 = max(extended_box.y0, block['bbox'][3])
+                extended_box.y0 = min(extended_box.y1, max(extended_box.y0, block['bbox'][3]))
                 extended_box.Sub_Boxes = [box for box in extended_box.Sub_Boxes if box.y0 >= extended_box.y0]
 
         # merge box with table
@@ -531,7 +560,7 @@ def detect_tables(page, blocks, model):
         res[box_index] = box
 
     res = sorted(res, key = lambda box: box.y0)
-
+    
     # merge tables
     for table_index, table in enumerate(res):
         if table_index == 0:
@@ -576,22 +605,42 @@ def detect_tables(page, blocks, model):
                                                 max(higher_table.x1, table.x1), max(higher_table.y1, table.y1)))
                             res[table_index] = new_table
                             res[higher_table_index] = new_table
-
+    
+    
     for table in res:
         for block in blocks:
             spans = get_block_spans(block)
             if len(spans) == 0:
                 continue
-            block_box = Box(bbox = (min([span['bbox'][0] for span in spans]),
-                                    min([span['bbox'][1] for span in spans]),
-                                    max([span['bbox'][2] for span in spans]),
-                                    max([span['bbox'][3] for span in spans])))
-                            
-            if block_box.intersection_area(table) > 0 and block_box.intersects_y(table):
+            block_span_boxes = [Box(text = span['text'], bbox = tuple(span['bbox'])) for span in spans]
+            block_box = Box(sub_boxes = block_span_boxes)
+            if block_box.intersects(table) and not all([table.intersects_y(span_box) for span_box in block_span_boxes]):
+                intersecting_boxes = [span_box for span_box in block_box.boxes() if span_box.intersects(table)]
+                if len(intersecting_boxes) == 0:
+                    continue
+                new_y0 = max([b.y1 for b in intersecting_boxes])
+                new_y1 = min([b.y0 for b in intersecting_boxes])
                 if block_box.y0 < table.y0 - 1:
-                    table.y0 = block_box.y1
+                    table.y0 = new_y0
                 if block_box.y1 > table.y1 + 1:
-                    table.y1 = block_box.y0
+                    table.y1 = new_y1
+
+    # remove trailing lines
+    #for table in res:
+    #    for span_box in span_boxes:
+    #        if span_box.intersection_area_percentage(table) > 0.25:
+    #            table.add_sub_box(span_box)
+    #    table.group_into_rows()
+    #    for row in reversed(table.boxes()):
+    #        if len(row.boxes()) <= 1:
+    #            table.Sub_Boxes = table.Sub_Boxes[:-1]
+    #        else:
+    #            break
+    #    if len(table.boxes()) > 0:
+    #        table.x0 = min([row.x0 for row in table.boxes()])
+    #        table.y0 = min([row.y0 for row in table.boxes()])
+    #        table.x1 = max([row.x1 for row in table.boxes()])
+    #        table.y1 = max([row.y1 for row in table.boxes()])
 
     return [b.bbox() for b in res if b.area() > 0]
 
